@@ -4,3 +4,5 @@ openai
 chromadb
 tiktoken
 faiss-cpu
+pypdf
+duckduckgo-search

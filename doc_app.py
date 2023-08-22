@@ -1,50 +1,108 @@
 import streamlit as st
-from langchain.llms import OpenAI
+from langchain.document_loaders import PyPDFLoader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.embeddings import OpenAIEmbeddings
-from langchain.chains import RetrievalQA
+from langchain.vectorstores import Chroma
+from langchain.chains import ConversationalRetrievalChain
+from langchain.chat_models import ChatOpenAI
+from langchain.memory import ConversationBufferMemory
+from langchain.agents import initialize_agent, AgentType, Tool
+from langchain.tools import DuckDuckGoSearchRun
+import os
 from langchain.vectorstores.faiss import FAISS
+from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+from langchain.chains.conversational_retrieval.prompts import CONDENSE_QUESTION_PROMPT, QA_PROMPT
+from langchain.chains.llm import LLMChain
+from langchain.chains.question_answering import load_qa_chain
 
+openai_api_key = os.environ["OPENAI_API_KEY"]
 
-def generate_response(uploaded_file, openai_api_key, query_text):
-    # Load document if file is uploaded
-    if uploaded_file is not None:
-        documents = [uploaded_file.read().decode()]
-        # Split documents into chunks
-        text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-        texts = text_splitter.create_documents(documents)
-        # Select embeddings
-        embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
-        # Create a vectorstore from documents
-        db = FAISS.from_documents(texts, embeddings)
-        # Create retriever interface
-        retriever = db.as_retriever()
-        # Create QA chain
-        qa = RetrievalQA.from_chain_type(llm=OpenAI(openai_api_key=openai_api_key), chain_type='stuff',
-                                         retriever=retriever)
-        return qa.run(query_text)
+st.set_page_config(
+    page_title="Project Management Chatbot",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
+## Function to load and split the PDF content
+def load_and_split_pdf(pdf_path):
+    loader = PyPDFLoader(pdf_path)
+    return loader.load_and_split()
 
-# Page title
-st.set_page_config(page_title='🦜🔗 Ask the Doc App')
-st.title('🦜🔗 Ask the Doc App')
+# Paths to the PDFs
+pdf_paths = ["pmbok_guide_v6.pdf", "pmbok_guide_v7.pdf"]
 
-# File upload
-uploaded_file = st.file_uploader('Upload an article', type='txt')
-# Query text
-query_text = st.text_input('Enter your question:', placeholder='Please provide a short summary.',
-                           disabled=not uploaded_file)
+# Splitter and Embedding setup
+text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+embedding_model = OpenAIEmbeddings()
 
-# Form input and query
-result = []
-with st.form('myform', clear_on_submit=True):
-    openai_api_key = st.text_input('OpenAI API Key', type='password', disabled=not (uploaded_file and query_text))
-    submitted = st.form_submit_button('Submit', disabled=not (uploaded_file and query_text))
-    if submitted and openai_api_key.startswith('sk-'):
-        with st.spinner('Calculating...'):
-            response = generate_response(uploaded_file, openai_api_key, query_text)
-            result.append(response)
-            del openai_api_key
+# Check if vectorstore is already in session state
+if "vectorstore" not in st.session_state:
+    # Load, split, and store content for each PDF
+    all_documents = []
+    for pdf_path in pdf_paths:
+        splits = load_and_split_pdf(pdf_path)
+        all_documents.extend(splits)
 
-if len(result):
-    st.info(response)
+    # Create a single vectorstore from combined documents
+    vectorstore = FAISS.from_documents(documents=all_documents, embedding=embedding_model)
+    st.session_state.vectorstore = vectorstore
+else:
+    vectorstore = st.session_state.vectorstore
+
+# Setup the chat mechanism
+llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
+streaming_llm = ChatOpenAI(model_name="gpt-3.5-turbo", streaming=True, callbacks=[StreamingStdOutCallbackHandler()],
+                           temperature=0)
+
+question_generator = LLMChain(llm=llm, prompt=CONDENSE_QUESTION_PROMPT)
+doc_chain = load_qa_chain(streaming_llm, chain_type="stuff", prompt=QA_PROMPT)
+
+# Initialize Conversation Memory
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+
+# Setup Conversational Retrieval Chain for the combined PDF content
+qa = ConversationalRetrievalChain(
+    retriever=vectorstore.as_retriever(), combine_docs_chain=doc_chain, question_generator=question_generator,
+    memory=memory)
+
+st.title("Project Management Chatbot with Conversation Memory")
+
+# Set up streamlit layout with containers
+instructions_container = st.container()
+input_container = st.container()
+chat_container = st.container()
+
+with instructions_container:
+    st.header("Instructions")
+    st.write("""
+    - This chatbot provides answers related to the PMBOK guide.
+    - Type in your question about project management in the chat input below.
+    - Adjust the slider to control the specificity of the chatbot's responses.
+    - For detailed queries or more context, refer to the PMBOK guide directly.
+    """)
+
+with input_container:
+    # Slider to control the LLM temperature
+    temperature = st.slider("Adjust chatbot specificity:", min_value=0.0, max_value=1.0, value=0.5, step=0.05)
+    llm.temperature = temperature
+
+with chat_container:
+    # Display chat messages from history on app rerun
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # Accept user input
+    if prompt := st.chat_input("Ask a question about project management or PMBOK guide:"):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # Check combined PDF content for the answer using the ConversationalRetrievalChain
+        response = qa({"question": prompt, "chat_history": st.session_state.messages})
+        response_text = response['answer']
+        st.session_state.messages.append({"role": "assistant", "content": response_text})
+        with st.chat_message("assistant"):
+            st.markdown(response_text)
