@@ -17,6 +17,8 @@ from langchain.chains.question_answering import load_qa_chain
 
 openai_api_key = os.environ["OPENAI_API_KEY"]
 
+avatar_path = "avatar.jpg"
+
 st.set_page_config(
     page_title="Project Management Chatbot",
     layout="wide",
@@ -77,7 +79,7 @@ with instructions_container:
     st.write("""
     - This chatbot provides answers related to the PMBOK guide.
     - Type in your question about project management in the chat input below.
-    - Adjust the slider to control the specificity of the chatbot's responses.
+    - Slide to adjust response specificity: left for broader answers, right for more focused ones.
     - For detailed queries or more context, refer to the PMBOK guide directly.
     """)
 
@@ -91,7 +93,7 @@ with chat_container:
     if "messages" not in st.session_state:
         st.session_state.messages = []
     for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
+        with st.chat_message(message["role"], avatar=avatar_path if message["role"] == "assistant" else None):
             st.markdown(message["content"])
 
     # Accept user input
@@ -104,5 +106,5 @@ with chat_container:
         response = qa({"question": prompt, "chat_history": st.session_state.messages})
         response_text = response['answer']
         st.session_state.messages.append({"role": "assistant", "content": response_text})
-        with st.chat_message("assistant"):
+        with st.chat_message("assistant", avatar=avatar_path):  # Add avatar for assistant messages
             st.markdown(response_text)
