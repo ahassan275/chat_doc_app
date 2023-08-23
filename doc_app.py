@@ -16,6 +16,8 @@ from langchain.chains.llm import LLMChain
 from langchain.chains.question_answering import load_qa_chain
 
 openai_api_key = os.environ["OPENAI_API_KEY"]
+openai_api_key = st.secrets["openai"]["api_key"]
+
 
 avatar_path = "avatar.jpg"
 
